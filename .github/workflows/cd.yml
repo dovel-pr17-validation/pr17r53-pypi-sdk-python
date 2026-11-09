@@ -1,0 +1,53 @@
+# This workflow will install Python dependencies and upload a version in the PyPI
+name: CD - Upload PyPI
+
+on:
+  release:
+    types: [ published ]
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # Sets up python
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v5
+        with:
+          python-version: 3.12
+
+      # Install dependencies
+      - name: "Installs dependencies"
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install setuptools build twine
+          python3 -m pip install .
+
+      - name: Build distribution
+        run: |
+          python3 -m build
+          python3 -m twine check dist/*
+
+      - name: Mint PyPI API token via Trusted Publishing (OIDC)
+        id: mint-token
+        run: |
+          oidc_resp=$(curl -sS -f -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=pypi")
+          oidc_token=$(python3 -c "import json,sys; print(json.load(sys.stdin)['value'])" <<< "$oidc_resp")
+
+          mint_resp=$(curl -sS -f -X POST https://pypi.org/_/oidc/mint-token \
+            -H "Content-Type: application/json" \
+            -d "{\"token\": \"${oidc_token}\"}")
+          token=$(python3 -c "import json,sys; print(json.load(sys.stdin)['token'])" <<< "$mint_resp")
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+
+      - name: Publish package distributions to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ steps.mint-token.outputs.token }}
+        run: python3 -m twine upload dist/*
